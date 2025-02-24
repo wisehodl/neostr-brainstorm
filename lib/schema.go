@@ -38,8 +38,11 @@ func NewEventNode(id string) *Node {
 	return NewNode("Event", Properties{"id": id})
 }
 
-func NewTagNode(name string, value string) *Node {
-	return NewNode("Tag", Properties{"name": name, "value": value})
+func NewTagNode(name string, value string, rest []string) *Node {
+	return NewNode("Tag", Properties{
+		"name":  name,
+		"value": value,
+		"rest":  rest})
 }
 
 // ========================================
@@ -57,6 +60,18 @@ func NewTaggedRel(
 	start *Node, end *Node, props Properties) *Relationship {
 	return NewRelationshipWithValidation(
 		"TAGGED", "Event", "Tag", start, end, props)
+}
+
+func NewReferencesEventRel(
+	start *Node, end *Node, props Properties) *Relationship {
+	return NewRelationshipWithValidation(
+		"REFERENCES", "Event", "Event", start, end, props)
+}
+
+func NewReferencesUserRel(
+	start *Node, end *Node, props Properties) *Relationship {
+	return NewRelationshipWithValidation(
+		"REFERENCES", "Event", "User", start, end, props)
 }
 
 // ========================================

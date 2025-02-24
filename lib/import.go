@@ -6,18 +6,19 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/nip60"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 // Workers
 
 func ImportEvents() {
-
-	data, err := os.ReadFile("./export.json")
+	data, err := os.ReadFile("./zaps.json")
 	if err != nil {
 		panic(err)
 	}
@@ -35,7 +36,7 @@ func ImportEvents() {
 	var event nostr.Event
 
 	for i, line := range strings.Split(string(data), "\n") {
-		if i > 10000 {
+		if i > 2000000 {
 			break
 		}
 
@@ -80,6 +81,12 @@ func ParseEvents(events chan nostr.Event) {
 		eventNode.Props["kind"] = event.Kind
 		eventNode.Props["content"] = event.Content
 
+		if event.Kind == nostr.KindZap {
+			// Event is a zap receipt
+			// Write the zap amount to the event
+			eventNode.Labels.Add("ZapReceiptEvent")
+		}
+
 		authorRel := NewSignedRel(userNode, eventNode, nil)
 
 		subgraph.AddNode(userNode)
@@ -91,13 +98,67 @@ func ParseEvents(events chan nostr.Event) {
 			if len(tag) >= 2 {
 				name := tag[0]
 				value := tag[1]
+				var rest []string
 
-				// Special cases
+				if len(name)+len(value) > 8192 {
+					// Skip tags that are too large for the neo4j indexer
+					continue
+				}
 
-				tagNode := NewTagNode(name, value)
-				tagRel := NewTaggedRel(eventNode, tagNode, nil)
-				subgraph.AddNode(tagNode)
-				subgraph.AddRel(tagRel)
+				if len(tag) > 2 {
+					rest = append([]string{}, tag[2:]...)
+				}
+
+				if event.Kind == nostr.KindZap && name == "bolt11" {
+					amount, err := nip60.GetSatoshisAmountFromBolt11(value)
+					if err == nil {
+						eventNode.Props["amount"] = amount
+					} else {
+						fmt.Println("Invalid bolt11 amount:", err)
+					}
+				}
+
+				if name == "e" &&
+					len(value) == 64 &&
+					regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(value) {
+					// Tag is an event reference
+					// Create a relationship to the referenced event
+					referencedEventNode := NewEventNode(value)
+					referencesRel := NewReferencesEventRel(
+						eventNode,
+						referencedEventNode,
+						map[string]any{
+							"name":  name,
+							"value": value,
+							"rest":  rest,
+						})
+					subgraph.AddNode(referencedEventNode)
+					subgraph.AddRel(referencesRel)
+
+				} else if name == "p" &&
+					len(value) == 64 &&
+					regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(value) {
+					// Tag is a user reference
+					// Create a relationship to the referenced user
+					referencedUserNode := NewUserNode(value)
+					referencesRel := NewReferencesUserRel(
+						eventNode,
+						referencedUserNode,
+						map[string]any{
+							"name":  name,
+							"value": value,
+							"rest":  rest,
+						})
+					subgraph.AddNode(referencedUserNode)
+					subgraph.AddRel(referencesRel)
+
+				} else {
+					// Generic Tag
+					tagNode := NewTagNode(name, value, rest)
+					tagRel := NewTaggedRel(eventNode, tagNode, nil)
+					subgraph.AddNode(tagNode)
+					subgraph.AddRel(tagRel)
+				}
 			}
 		}
 
@@ -308,7 +369,7 @@ func mergeRels(
 		MATCH (start%s { %s })
 		MATCH (end%s { %s })
 
-		CREATE (start)-[r%s]->(end)
+		MERGE (start)-[r%s]->(end)
 		SET r += rel.props
 		`,
 		startCypherLabel, startCypherProps,
